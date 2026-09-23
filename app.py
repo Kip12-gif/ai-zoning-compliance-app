@@ -264,13 +264,7 @@ with col1:
 with col2:
     st.subheader("Spatial Overlay & Boundary Verification")
     m = render_spatial_map(zoning_gdf, target_parcel)
-# ✅ Corrected Line 267:
-st.components.v1.html(m._repr_html_(), height=600)
-with col2:
-    st.subheader("Spatial Overlay & Boundary Verification")
-    m = render_spatial_map(zoning_gdf, target_parcel)
     
-    # Passing raw HTML inside a div container ensures fixed height without pushing down
     map_html = f"""
     <div style="width: 100%; height: 600px;">
         {m._repr_html_()}
