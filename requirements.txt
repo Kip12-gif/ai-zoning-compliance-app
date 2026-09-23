@@ -1,0 +1,6 @@
+﻿streamlit>=1.25.0
+geopandas>=0.13.0
+shapely>=2.0.0
+folium>=0.14.0
+jinja2
+reportlab
