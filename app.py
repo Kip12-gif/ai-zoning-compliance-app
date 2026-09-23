@@ -264,4 +264,5 @@ with col1:
 with col2:
     st.subheader("Spatial Overlay & Boundary Verification")
     m = render_spatial_map(zoning_gdf, target_parcel)
-    st.components.v1.html(m._repr_html_(), height=600)(m._repr_html_(), height=500)
+# ✅ Corrected Line 267:
+st.components.v1.html(m._repr_html_(), height=600)
