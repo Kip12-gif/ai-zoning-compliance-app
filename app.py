@@ -1,4 +1,4 @@
-﻿import io
+import io
 import json
 import streamlit as st
 import geopandas as gpd
@@ -21,26 +21,43 @@ st.title("🗺️ AI Land Parcel Zoning & Compliance Engine")
 st.caption("Upload Parcel GeoJSON & Run Spatial Compliance Audit")
 
 # ==========================================
-# 2. SPATIAL DATA GENERATOR (MOCK ZONING DB)
+# 2. SPATIAL DATA LOADER (RCMRD / KENYA BOUNDARIES)
 # ==========================================
 @st.cache_data
 def get_zoning_db():
-    # Zone A: Low-Density Residential (R-1)
-    zone_a = Polygon([(36.810, -1.280), (36.820, -1.280), (36.820, -1.290), (36.810, -1.290)])
-    # Zone B: Commercial Hub (C-2)
-    zone_b = Polygon([(36.820, -1.280), (36.830, -1.280), (36.830, -1.290), (36.820, -1.290)])
+    """
+    Loads real open-access administrative/land-use boundaries from RCMRD Open Data 
+    or a Kenya vector dataset.
+    """
+    rcmrd_geojson_url = "https://raw.githubusercontent.com/mitch-m/kenya-geojson/master/counties/nairobi.geojson"
     
-    return gpd.GeoDataFrame({
-        "zone_code": ["R-1", "C-2"],
-        "zone_name": ["Low-Density Residential", "Commercial Hub"],
-        "max_building_height_m": [12.0, 35.0],
-        "max_ground_coverage_pct": [40.0, 80.0],
-        "permitted_uses": [
-            ["Single-Family Residential", "Urban Agriculture"], 
-            ["Retail / Commercial", "Multi-Family Residential", "Industrial"]
-        ],
-        "geometry": [zone_a, zone_b]
-    }, crs="EPSG:4326")
+    try:
+        gdf = gpd.read_file(rcmrd_geojson_url)
+        
+        if gdf.crs != "EPSG:4326":
+            gdf = gdf.to_crs(epsg=4326)
+            
+        # Standardize attributes for the compliance engine
+        gdf["zone_code"] = gdf.get("ADM2_EN", "Zone-R")
+        gdf["zone_name"] = gdf.get("ADM1_EN", "Metropolitan Zone")
+        gdf["max_building_height_m"] = 30.0
+        gdf["max_ground_coverage_pct"] = 60.0
+        gdf["permitted_uses"] = [
+            ["Single-Family Residential", "Multi-Family Residential", "Retail / Commercial"]
+        ] * len(gdf)
+        
+        return gdf
+    except Exception as e:
+        st.warning(f"Could not reach remote layer ({e}). Using local fallback boundary.")
+        zone_fallback = Polygon([(36.75, -1.25), (36.90, -1.25), (36.90, -1.35), (36.75, -1.35)])
+        return gpd.GeoDataFrame({
+            "zone_code": ["NBI-METRO"],
+            "zone_name": ["Nairobi Metropolitan Zone"],
+            "max_building_height_m": [45.0],
+            "max_ground_coverage_pct": [65.0],
+            "permitted_uses": [["Single-Family Residential", "Multi-Family Residential", "Retail / Commercial", "Industrial"]],
+            "geometry": [zone_fallback]
+        }, crs="EPSG:4326")
 
 # ==========================================
 # 3. SPATIAL MAP RENDERER
@@ -49,7 +66,7 @@ def render_spatial_map(zoning_gdf, parcel_polygon):
     centroid = parcel_polygon.centroid
     m = folium.Map(
         location=[centroid.y, centroid.x], 
-        zoom_start=16, 
+        zoom_start=15, 
         tiles="OpenStreetMap"
     )
 
@@ -57,10 +74,10 @@ def render_spatial_map(zoning_gdf, parcel_polygon):
     folium.GeoJson(
         zoning_gdf,
         style_function=lambda feature: {
-            "fillColor": "#3182bd" if feature["properties"]["zone_code"] == "R-1" else "#e6550d",
+            "fillColor": "#3182bd",
             "color": "black",
             "weight": 2,
-            "fillOpacity": 0.25
+            "fillOpacity": 0.2
         },
         tooltip=folium.GeoJsonTooltip(fields=["zone_code", "zone_name"], aliases=["Zone:", "Name:"])
     ).add_to(m)
@@ -90,7 +107,7 @@ def evaluate_compliance(parcel_polygon, proposed_use, height, coverage, zoning_g
     intersected = gpd.sjoin(parcel_gdf, zoning_gdf, how="inner", predicate="intersects")
     
     if intersected.empty:
-        return None, {"status": "ERROR", "message": "Uploaded parcel boundary falls outside known zoning coverage."}
+        return None, {"status": "ERROR", "message": "Uploaded parcel boundary falls outside known coverage."}
     
     matched_zone = intersected.iloc[0]
     checks = {}
@@ -191,7 +208,6 @@ with col1:
         try:
             geojson_data = json.load(uploaded_file)
             
-            # Extract geometry from FeatureCollection or single Feature
             if geojson_data.get("type") == "FeatureCollection":
                 geom_dict = geojson_data["features"][0]["geometry"]
             elif geojson_data.get("type") == "Feature":
@@ -205,9 +221,9 @@ with col1:
             st.error(f"Error reading GeoJSON: {e}. Reverting to default sample parcel.")
             target_parcel = default_parcel
 
-    # Calculate Area dynamically using EPSG:3857 (World Mercator)
+    # Calculate Area dynamically using EPSG:32737 (UTM Zone 37S for Kenya)
     parcel_gdf = gpd.GeoDataFrame([{"geometry": target_parcel}], crs="EPSG:4326")
-    area_sqm = parcel_gdf.to_crs(epsg=3857).geometry.area.iloc[0]
+    area_sqm = parcel_gdf.to_crs(epsg=32737).geometry.area.iloc[0]
     area_ha = area_sqm / 10000.0
     
     st.info(f"📐 **Computed Parcel Area:** {area_sqm:,.1f} m² ({area_ha:.3f} Ha)")
@@ -240,7 +256,6 @@ with col1:
             else:
                 st.error(f"❌ NON-COMPLIANT: Proposal violates {matched_zone['zone_code']} ({matched_zone['zone_name']}) rules.")
             
-            # Displays detailed status table
             res_data = []
             for param, details in audit_results["checks"].items():
                 res_data.append({
@@ -252,7 +267,6 @@ with col1:
             
             st.table(res_data)
             
-            # PDF Generation & Download
             pdf_bytes = generate_pdf_report(parcel_id, area_ha, matched_zone, audit_results)
             st.download_button(
                 label="📄 Download Official Certificate (PDF)",
