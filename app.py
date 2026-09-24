@@ -12,88 +12,119 @@ from reportlab.pdfgen import canvas
 # 1. PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="AI Land Parcel Zoning App",
+    page_title="Land Parcel Zoning & Compliance Engine",
     page_icon="🗺️",
     layout="wide"
 )
 
-st.title("🗺️ AI Land Parcel Zoning & Compliance Engine")
-st.caption("Upload Parcel GeoJSON & Run Spatial Compliance Audit")
+st.title("🗺️ Land Parcel Zoning & Compliance Engine")
+st.caption("Spatial Audit & Zoning Rule Evaluation System")
 
 # ==========================================
-# 2. SPATIAL DATA LOADER (RCMRD / KENYA BOUNDARIES)
+# 2. BUILT-IN NAIROBI ZONING DATABASE
 # ==========================================
 @st.cache_data
 def get_zoning_db():
-    """
-    Loads real open-access administrative/land-use boundaries from RCMRD Open Data 
-    or a Kenya vector dataset.
-    """
-    rcmrd_geojson_url = "https://raw.githubusercontent.com/mitch-m/kenya-geojson/master/counties/nairobi.geojson"
+    # Zone 1: Commercial Hub (Westlands / CBD Area)
+    zone_cbd = Polygon([
+        (36.810, -1.275), (36.835, -1.275), 
+        (36.835, -1.295), (36.810, -1.295)
+    ])
     
-    try:
-        gdf = gpd.read_file(rcmrd_geojson_url)
-        
-        if gdf.crs != "EPSG:4326":
-            gdf = gdf.to_crs(epsg=4326)
-            
-        # Standardize attributes for the compliance engine
-        gdf["zone_code"] = gdf.get("ADM2_EN", "Zone-R")
-        gdf["zone_name"] = gdf.get("ADM1_EN", "Metropolitan Zone")
-        gdf["max_building_height_m"] = 30.0
-        gdf["max_ground_coverage_pct"] = 60.0
-        gdf["permitted_uses"] = [
+    # Zone 2: Residential Zone (Kilimani / Kileleshwa Area)
+    zone_res = Polygon([
+        (36.780, -1.280), (36.810, -1.280), 
+        (36.810, -1.305), (36.780, -1.305)
+    ])
+    
+    # Zone 3: High-Density Mixed Use Zone
+    zone_mix = Polygon([
+        (36.810, -1.295), (36.840, -1.295), 
+        (36.840, -1.320), (36.810, -1.320)
+    ])
+
+    return gpd.GeoDataFrame({
+        "zone_code": ["CBD-C1", "RES-R2", "MIX-MU3"],
+        "zone_name": ["Nairobi Commercial Hub", "Low-Density Residential", "High-Density Mixed Use"],
+        "max_building_height_m": [45.0, 15.0, 30.0],
+        "max_ground_coverage_pct": [80.0, 40.0, 65.0],
+        "permitted_uses": [
+            ["Retail / Commercial", "Multi-Family Residential", "Industrial"],
+            ["Single-Family Residential", "Multi-Family Residential"],
             ["Single-Family Residential", "Multi-Family Residential", "Retail / Commercial"]
-        ] * len(gdf)
-        
-        return gdf
-    except Exception as e:
-        st.warning(f"Could not reach remote layer ({e}). Using local fallback boundary.")
-        zone_fallback = Polygon([(36.75, -1.25), (36.90, -1.25), (36.90, -1.35), (36.75, -1.35)])
-        return gpd.GeoDataFrame({
-            "zone_code": ["NBI-METRO"],
-            "zone_name": ["Nairobi Metropolitan Zone"],
-            "max_building_height_m": [45.0],
-            "max_ground_coverage_pct": [65.0],
-            "permitted_uses": [["Single-Family Residential", "Multi-Family Residential", "Retail / Commercial", "Industrial"]],
-            "geometry": [zone_fallback]
-        }, crs="EPSG:4326")
+        ],
+        "geometry": [zone_cbd, zone_res, zone_mix]
+    }, crs="EPSG:4326")
 
 # ==========================================
-# 3. SPATIAL MAP RENDERER
+# 3. SPATIAL MAP RENDERER (SATELLITE & TOPO)
 # ==========================================
 def render_spatial_map(zoning_gdf, parcel_polygon):
     centroid = parcel_polygon.centroid
+    
+    # Base Map Initialization
     m = folium.Map(
         location=[centroid.y, centroid.x], 
         zoom_start=15, 
-        tiles="OpenStreetMap"
+        tiles=None  # Standard tiles turned off to add custom tile layers
     )
 
-    # Zoning Layer
+    # 1. OpenStreetMap (Standard Street View)
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="Street Map",
+        control=True
+    ).add_to(m)
+
+    # 2. Esri World Imagery (Satellite)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="Satellite Imagery",
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # 3. OpenTopoMap (Topographic)
+    folium.TileLayer(
+        tiles="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        attr="OpenTopoMap",
+        name="Topographic Map",
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # Zoning Boundary Layer
     folium.GeoJson(
         zoning_gdf,
+        name="Zoning Boundaries",
         style_function=lambda feature: {
-            "fillColor": "#3182bd",
+            "fillColor": "#3182bd" if feature["properties"]["zone_code"] == "RES-R2" else (
+                "#e6550d" if feature["properties"]["zone_code"] == "CBD-C1" else "#31a354"
+            ),
             "color": "black",
             "weight": 2,
-            "fillOpacity": 0.2
+            "fillOpacity": 0.3
         },
-        tooltip=folium.GeoJsonTooltip(fields=["zone_code", "zone_name"], aliases=["Zone:", "Name:"])
+        tooltip=folium.GeoJsonTooltip(fields=["zone_code", "zone_name"], aliases=["Zone Code:", "Zone Name:"])
     ).add_to(m)
 
     # Target Parcel Layer
     parcel_gdf = gpd.GeoDataFrame([{"geometry": parcel_polygon}], crs="EPSG:4326")
     folium.GeoJson(
         parcel_gdf,
+        name="Target Parcel",
         style_function=lambda feature: {
             "fillColor": "#de2d26",
             "color": "red",
             "weight": 3,
-            "fillOpacity": 0.5
+            "fillOpacity": 0.55
         },
         tooltip="Uploaded Parcel Boundary"
     ).add_to(m)
+
+    # Layer Control Switcher
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
 
     return m
 
@@ -103,11 +134,11 @@ def render_spatial_map(zoning_gdf, parcel_polygon):
 def evaluate_compliance(parcel_polygon, proposed_use, height, coverage, zoning_gdf):
     parcel_gdf = gpd.GeoDataFrame([{"geometry": parcel_polygon}], crs="EPSG:4326")
     
-    # Spatial Join / Intersection
+    # Spatial Intersection Check
     intersected = gpd.sjoin(parcel_gdf, zoning_gdf, how="inner", predicate="intersects")
     
     if intersected.empty:
-        return None, {"status": "ERROR", "message": "Uploaded parcel boundary falls outside known coverage."}
+        return None, {"status": "ERROR", "message": "Uploaded parcel boundary falls outside designated zoning coverage."}
     
     matched_zone = intersected.iloc[0]
     checks = {}
@@ -151,23 +182,23 @@ def generate_pdf_report(parcel_id, area_ha, zone_info, audit_results):
     c = canvas.Canvas(buffer, pagesize=letter)
     
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, 750, "ZONING COMPLIANCE AUDIT REPORT")
+    c.drawString(50, 750, "OFFICIAL ZONING AUDIT CERTIFICATE")
     c.setFont("Helvetica", 10)
     c.drawString(50, 735, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     c.line(50, 725, 550, 725)
     
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(50, 700, f"Parcel Identification: {parcel_id}")
+    c.drawString(50, 700, f"Parcel Reference: {parcel_id}")
     c.drawString(50, 680, f"Calculated Area: {area_ha:.3f} Hectares")
     c.drawString(50, 660, f"Designated Zone: {zone_info['zone_code']} - {zone_info['zone_name']}")
     
-    status_str = "APPROVED" if audit_results["overall_passed"] else "NON-COMPLIANT"
+    status_str = "COMPLIANT / APPROVED" if audit_results["overall_passed"] else "NON-COMPLIANT"
     c.setFillColorRGB(0, 0.5, 0) if audit_results["overall_passed"] else c.setFillColorRGB(0.8, 0, 0)
     c.drawString(50, 630, f"AUDIT STATUS: {status_str}")
     
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(50, 590, "Detailed Rule Evaluation:")
+    c.drawString(50, 590, "Parameter Compliance Summary:")
     
     y = 560
     c.setFont("Helvetica", 10)
@@ -185,7 +216,7 @@ def generate_pdf_report(parcel_id, area_ha, zone_info, audit_results):
 # ==========================================
 zoning_gdf = get_zoning_db()
 
-# Default Fallback Sample Parcel
+# Default Sample Parcel Polygon
 default_parcel = Polygon([
     (36.815, -1.282), (36.818, -1.282), 
     (36.818, -1.285), (36.815, -1.285)
@@ -194,12 +225,12 @@ default_parcel = Polygon([
 col1, col2 = st.columns([1.1, 0.9])
 
 with col1:
-    st.subheader("1. Parcel Boundary Input")
+    st.subheader("1. Spatial Parcel Input")
     
     uploaded_file = st.file_uploader(
         "Upload Parcel File (.geojson or .json)", 
         type=["geojson", "json"],
-        help="Upload a GeoJSON file containing a Polygon geometry for your parcel."
+        help="Upload a GeoJSON file containing a Polygon geometry."
     )
     
     target_parcel = default_parcel
@@ -218,12 +249,12 @@ with col1:
             target_parcel = shape(geom_dict)
             st.success("✅ GeoJSON loaded successfully!")
         except Exception as e:
-            st.error(f"Error reading GeoJSON: {e}. Reverting to default sample parcel.")
+            st.error(f"Error parsing GeoJSON: {e}. Reverting to default sample parcel.")
             target_parcel = default_parcel
 
-    # Calculate Area dynamically using EPSG:32737 (UTM Zone 37S for Kenya)
+    # Area Calculation using EPSG:3857 (Metric Projection)
     parcel_gdf = gpd.GeoDataFrame([{"geometry": target_parcel}], crs="EPSG:4326")
-    area_sqm = parcel_gdf.to_crs(epsg=32737).geometry.area.iloc[0]
+    area_sqm = parcel_gdf.to_crs(epsg=3857).geometry.area.iloc[0]
     area_ha = area_sqm / 10000.0
     
     st.info(f"📐 **Computed Parcel Area:** {area_sqm:,.1f} m² ({area_ha:.3f} Ha)")
@@ -235,7 +266,7 @@ with col1:
         "Proposed Land Use", 
         ["Single-Family Residential", "Multi-Family Residential", "Retail / Commercial", "Industrial"]
     )
-    proposed_height = st.number_input("Building Height (meters)", value=10.0, min_value=1.0, max_value=100.0, step=1.0)
+    proposed_height = st.number_input("Building Height (meters)", value=12.0, min_value=1.0, max_value=100.0, step=1.0)
     proposed_coverage = st.slider("Ground Coverage (%)", 10, 100, 35)
 
     run_audit = st.button("🔍 Execute Compliance Audit", type="primary", use_container_width=True)
@@ -252,9 +283,9 @@ with col1:
             st.error(audit_results["message"])
         else:
             if audit_results["overall_passed"]:
-                st.success(f"✅ APPROVED: Development complies with {matched_zone['zone_code']} ({matched_zone['zone_name']}) regulations.")
+                st.success(f"✅ APPROVED: Proposal satisfies all parameters for {matched_zone['zone_code']} ({matched_zone['zone_name']}).")
             else:
-                st.error(f"❌ NON-COMPLIANT: Proposal violates {matched_zone['zone_code']} ({matched_zone['zone_name']}) rules.")
+                st.error(f"❌ NON-COMPLIANT: Proposal violates regulations for {matched_zone['zone_code']} ({matched_zone['zone_name']}).")
             
             res_data = []
             for param, details in audit_results["checks"].items():
@@ -269,7 +300,7 @@ with col1:
             
             pdf_bytes = generate_pdf_report(parcel_id, area_ha, matched_zone, audit_results)
             st.download_button(
-                label="📄 Download Official Certificate (PDF)",
+                label="📄 Download Official Compliance Certificate (PDF)",
                 data=pdf_bytes,
                 file_name=f"zoning_audit_{parcel_id.replace('/', '_')}.pdf",
                 mime="application/pdf"
@@ -277,11 +308,6 @@ with col1:
 
 with col2:
     st.subheader("Spatial Overlay & Boundary Verification")
+    st.caption("Use the layer control in the top-right corner to toggle Satellite or Topo basemaps.")
     m = render_spatial_map(zoning_gdf, target_parcel)
-    
-    map_html = f"""
-    <div style="width: 100%; height: 600px;">
-        {m._repr_html_()}
-    </div>
-    """
-    st.components.v1.html(map_html, height=620, scrolling=False)
+    st.components.v1.html(m._repr_html_(), height=620)
